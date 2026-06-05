@@ -1,0 +1,11 @@
+# llama.cpp 源码 (体积大，单独下载)
+llama.cpp/
+
+# 模型文件
+*.gguf
+*.bin
+models/
+
+# 临时文件
+*.tmp
+*.log
