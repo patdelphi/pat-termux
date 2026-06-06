@@ -1,0 +1,82 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 程序说明：一键启动 Termux 上的 llama.cpp 自带 Web UI。
+# 使用方式：在 Termux 中执行 bash ~/pat-termux/setup/startllama，或复制到 PATH 后执行 startllama。
+
+set -u
+
+# 默认配置：可以在执行前通过环境变量覆盖，例如 PORT=8081 THREADS=6 ./startllama
+LLAMA_DIR="${LLAMA_DIR:-$HOME/llama.cpp}"
+MODEL_PATH="${MODEL_PATH:-$HOME/models/qwen3.5-2b-q4km.gguf}"
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8080}"
+ACCESS_HOST="${ACCESS_HOST:-192.168.71.83}"
+CTX_SIZE="${CTX_SIZE:-2048}"
+THREADS="${THREADS:-4}"
+LOG_FILE="${LOG_FILE:-$HOME/llama-server-${PORT}.log}"
+SERVER_BIN="$LLAMA_DIR/build/bin/llama-server"
+
+echo "准备启动 llama.cpp Web UI..."
+echo "访问地址: http://${ACCESS_HOST}:${PORT}"
+
+# 检查 llama-server 是否存在，避免启动失败时只留下空日志。
+if [ ! -x "$SERVER_BIN" ]; then
+  echo "错误: 未找到可执行文件: $SERVER_BIN"
+  echo "请先在 Termux 中执行: cd \"$LLAMA_DIR\" && cmake --build build --target llama-server -j1"
+  exit 1
+fi
+
+# 检查模型文件是否存在。
+if [ ! -f "$MODEL_PATH" ]; then
+  echo "错误: 未找到模型文件: $MODEL_PATH"
+  exit 1
+fi
+
+# 如果端口已有 llama-server 监听，直接输出状态，避免重复占用内存。
+if pgrep -af "llama-server.*--port ${PORT}" >/dev/null 2>&1; then
+  echo "llama-server 已在端口 ${PORT} 运行。"
+  curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1 \
+    && echo "健康检查: OK" \
+    || echo "健康检查: 端口被占用，但 /health 暂不可用，请查看日志: $LOG_FILE"
+  echo "Web UI: http://${ACCESS_HOST}:${PORT}"
+  exit 0
+fi
+
+# 如果端口被其他程序占用，停止启动，避免误杀无关进程。
+if command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ":${PORT} "; then
+  echo "错误: 端口 ${PORT} 已被其他程序占用。"
+  echo "请换端口启动，例如: PORT=8081 $0"
+  exit 1
+fi
+
+# 尝试获取唤醒锁；没有 termux-api 时不阻断启动。
+if command -v termux-wake-lock >/dev/null 2>&1; then
+  termux-wake-lock >/dev/null 2>&1 || true
+fi
+
+# 后台启动 Web UI，日志写入用户目录。
+cd "$LLAMA_DIR" || exit 1
+nohup "$SERVER_BIN" \
+  -m "$MODEL_PATH" \
+  --host "$HOST" \
+  --port "$PORT" \
+  -c "$CTX_SIZE" \
+  -t "$THREADS" \
+  > "$LOG_FILE" 2>&1 < /dev/null &
+
+SERVER_PID="$!"
+echo "启动中，PID: $SERVER_PID"
+echo "日志文件: $LOG_FILE"
+
+# 等待服务就绪，最多等待 90 秒。
+for _ in $(seq 1 45); do
+  if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+    echo "启动成功。"
+    echo "Web UI: http://${ACCESS_HOST}:${PORT}"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "警告: 服务未在预期时间内通过健康检查。"
+echo "请查看日志: $LOG_FILE"
+exit 1
